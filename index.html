@@ -42,6 +42,7 @@
       <nav id="abas">
         <button data-aba="apuracao" class="ativa">Apuração</button>
         <button data-aba="contratos">Contratos</button>
+        <button data-aba="fechamento">Fechamento</button>
         <button data-aba="importacoes">Importações</button>
         <button data-aba="indices">Índices e regras</button>
         <button data-aba="equipe" id="aba-btn-equipe" class="oculta">Equipe</button>
@@ -72,8 +73,34 @@
       </section>
 
       <section id="aba-contratos" class="aba oculta">
-        <div class="filtros"><input id="busca-contratos" type="search" placeholder="Buscar contrato"></div>
+        <div class="filtros"><input id="busca-contratos" type="search" placeholder="Buscar contrato"><button id="novo-contrato" class="so-edicao">+ Novo contrato</button></div>
         <div class="tabela-wrap"><table id="tabela-contratos"></table></div>
+      </section>
+
+      <section id="aba-fechamento" class="aba oculta">
+        <p class="sub">Horas que cada setor leva para fechar a empresa no mês. Marque os setores que a empresa tem e informe as horas de cada um (ex.: 12, 12,5 ou 12:30). A média da empresa é o total de horas ÷ a quantidade de setores.</p>
+        <div id="kpis-fechamento" class="kpis"></div>
+        <div class="filtros">
+          <input id="busca-fechamento" type="search" placeholder="Buscar empresa ou CNPJ">
+          <select id="filtro-fechamento">
+            <option value="">Todas as empresas ativas</option>
+            <option value="com">Com tempo cadastrado</option>
+            <option value="sem">Sem tempo cadastrado</option>
+            <option value="incompleto">Setor marcado sem horas</option>
+            <option value="alterado">Alteradas (não salvas)</option>
+          </select>
+        </div>
+        <div id="lote-fechamento" class="cartao lote so-edicao">
+          <b id="lote-qtd">0 selecionada(s)</b>
+          <span class="sub">Setores para as selecionadas:</span>
+          <span id="lote-setores" class="setores-lote"></span>
+          <button class="sec" id="lote-aplicar" disabled>Aplicar setores</button>
+          <button class="sec" id="lote-sugerir" title="Marca os setores conforme o plano do contrato, só nas empresas ainda sem setor">Sugerir setores pelo plano</button>
+          <span class="cresce"></span>
+          <button class="sec" id="fech-descartar" disabled>Descartar alterações</button>
+          <button id="fech-salvar" disabled>Salvar alterações</button>
+        </div>
+        <div class="tabela-wrap"><table id="tabela-fechamento"></table></div>
       </section>
 
       <section id="aba-importacoes" class="aba oculta">
@@ -151,6 +178,7 @@
   <script src="lib/engine.js"></script>
   <script src="lib/parsers.js"></script>
   <script src="lib/api.js"></script>
+  <script src="lib/fechamento.js"></script>
   <script src="lib/servico.js"></script>
   <script src="app.js"></script>
 </body>

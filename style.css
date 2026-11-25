@@ -70,3 +70,22 @@ textarea.baixo { min-height: 80px; }
 .campo-senha input { width: 100%; padding-right: 40px; }
 .ver-senha { position: absolute; right: 4px; top: 50%; transform: translateY(-50%); background: none; border: 0; color: var(--mut); padding: 4px 6px; display: flex; }
 .ver-senha:hover, .ver-senha:focus-visible { color: var(--pri); }
+body.somente-leitura .so-edicao { display: none !important; }
+.filtros button { white-space: nowrap; }
+/* Fechamento por setor */
+.lote { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; padding: 10px 14px; position: sticky; top: var(--topo-h, 58px); z-index: 4; }
+.lote .sub { margin: 0; }
+.setores-lote { display: flex; gap: 10px; flex-wrap: wrap; }
+.chk { display: inline-flex; flex-direction: row; align-items: center; gap: 4px; font-size: 13px; color: var(--txt); cursor: pointer; }
+.setor { display: flex; align-items: center; gap: 6px; }
+.setor input[type=text] { width: 68px; text-align: right; padding: 4px 6px; }
+.setor input[type=text]:disabled { opacity: .35; }
+.setor input.invalido { border-color: var(--erro); background: var(--erro-2); }
+tr.alterado td { background: var(--alerta-2); }
+tr.alterado td:first-child { box-shadow: inset 3px 0 0 var(--alerta); }
+td.sel, th.sel { width: 28px; padding-right: 0; }
+@media (max-width: 640px) { .lote { position: static; } }
+button.perigo { background: var(--card); color: var(--erro); border-color: var(--erro); }
+button.perigo:hover { background: var(--erro-2); }
+button.mini { padding: 3px 8px; font-size: 12px; }
+td.acoes-linha { text-align: right; } td.acoes-linha button + button { margin-left: 6px; }

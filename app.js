@@ -7,6 +7,9 @@ const svc = globalThis.BraskerServico;
 const api = globalThis.BraskerApi;
 const { PLANOS, PROCESSOS } = globalThis.BraskerCatalog;
 const { PARSERS } = globalThis.BraskerParsers;
+const FECH = globalThis.BraskerFechamento;
+const SETORES = FECH.SETORES;
+const horas = (h) => (h == null ? '–' : `${Number(h).toLocaleString('pt-BR', { maximumFractionDigits: 1 })} h`);
 
 const estado = { painel: null, contratos: [], aba: 'apuracao', papel: null, config: {} };
 const PAPEL_ROTULO = { administrador: 'Administrador', editor: 'Editor', visualizador: 'Visualizador' };
@@ -187,25 +190,60 @@ async function carregarContratos() { estado.contratos = await svc.contratos(); e
 function renderContratos() {
   const q = $('#busca-contratos').value.toLowerCase();
   const lista = estado.contratos.filter((c) => !q || `${c.nome} ${c.cnpj} ${c.id}`.toLowerCase().includes(q));
-  $('#tabela-contratos').innerHTML = `<thead><tr><th>Contrato</th><th>Status</th><th>Plano</th><th>Processo</th><th>Índice</th><th>Início</th><th class="n">Base vigente</th><th>Franquias</th></tr></thead><tbody>${
+  $('#tabela-contratos').innerHTML = `<thead><tr><th>Contrato</th><th>Status</th><th>Plano</th><th>Processo</th><th>Índice</th><th>Início</th><th class="n">Base vigente</th><th>Franquias</th>${leitura() ? '' : '<th></th>'}</tr></thead><tbody>${
     lista.map((c) => { const v = c.versoes[c.versoes.length - 1] || {}; const nf = Object.keys(v.franquias || {}).length; return `<tr class="clicavel" data-id="${esc(c.id)}">
       <td><b>${esc(c.nome)}</b><br><small class="sub">${cnpjFmt(c.cnpj)} · #${esc(c.id)}</small></td><td><span class="tag ${c.status === 'Ativo' ? 'ok' : ''}">${esc(c.status)}</span></td>
       <td>${esc(c.plano || '–')}</td><td>${esc(c.processo || '–')}</td><td>${esc(c.indice || '–')}</td><td>${esc(c.dataInicio || '–')}</td>
-      <td class="n">${brl(v.valorBase)}</td><td>${nf ? `${nf} métrica(s)` : '<span class="tag alerta">não cadastradas</span>'}</td></tr>`; }).join('')
-      || '<tr><td colspan="8" class="sub">Nenhum contrato. Faça a carga inicial na aba Importações.</td></tr>'
+      <td class="n">${brl(v.valorBase)}</td><td>${nf ? `${nf} métrica(s)` : '<span class="tag alerta">não cadastradas</span>'}</td>${botoesEmpresa(c.id)}</tr>`; }).join('')
+      || '<tr><td colspan="9" class="sub">Nenhum contrato. Use "+ Novo contrato" ou faça a carga inicial na aba Importações.</td></tr>'
   }</tbody>`;
-  document.querySelectorAll('#tabela-contratos tr.clicavel').forEach((tr) => tr.onclick = () => editarContrato(tr.dataset.id));
+  document.querySelectorAll('#tabela-contratos tr.clicavel').forEach((tr) => tr.onclick = (e) => { if (!e.target.closest('button')) editarContrato(tr.dataset.id); });
+}
+
+// Editar / Excluir em qualquer lista de empresas (só editor e administrador).
+const botoesEmpresa = (id) => (leitura() ? '' : `<td class="acoes-linha"><button class="sec mini" data-editar="${esc(id)}">Editar</button><button class="perigo mini" data-excluir="${esc(id)}">Excluir</button></td>`);
+
+async function excluirEmpresa(id) {
+  const c = svc.contratosEmCache().find((x) => x.id === id);
+  if (!c) return;
+  if (!confirm(`Excluir o contrato #${c.id} – ${c.nome}?\n\nApaga o cadastro, as franquias, o tempo de fechamento e as apurações em rascunho. Não dá para desfazer.\nAs medições importadas continuam guardadas.`)) return;
+  await svc.excluirContrato(id);
+  $('#painel-lateral').classList.add('oculta');
+  toast(`Contrato #${c.id} excluído`);
+  await recarregarListas();
+}
+
+// Recarrega a aba em que a pessoa está (Contratos ou Fechamento) depois de criar, editar ou excluir.
+async function recarregarListas() {
+  if (estado.aba === 'fechamento') await carregarFechamento(); else await carregarContratos();
+}
+
+function aoClicarAcaoEmpresa(e) {
+  const b = e.target.closest('[data-editar], [data-excluir]');
+  if (!b) return;
+  e.stopPropagation();
+  if (b.dataset.editar) editarContrato(b.dataset.editar);
+  else tentar(excluirEmpresa)(b.dataset.excluir);
+}
+
+// Contrato em branco para o cadastro manual (sem precisar da planilha).
+function contratoVazio() {
+  return { id: svc.proximoNumero(), nome: '', cnpj: '', status: 'Ativo', plano: null, processo: null, indice: null, dataInicio: null,
+    tipoAdicionalFuncionario: 'lote', versoes: [{ vigenciaInicio: comp(), valorBase: 0, franquias: {}, precos: {} }], descontos: [] };
 }
 
 function editarContrato(id) {
-  const c = JSON.parse(JSON.stringify(estado.contratos.find((x) => x.id === id)));
+  const novo = id == null;
+  const c = novo ? contratoVazio() : JSON.parse(JSON.stringify(svc.contratosEmCache().find((x) => x.id === id)));
   const v = c.versoes[c.versoes.length - 1];
   const ro = leitura() ? 'disabled' : '';
   const sel = (idc, ops, val) => `<select id="${idc}" ${ro}><option value=""></option>${ops.map((o) => `<option ${o === val ? 'selected' : ''}>${esc(o)}</option>`).join('')}</select>`;
   const chavesPreco = [...new Set([...Object.keys(estado.config.tabela_precos || {}), 'funcionario_unitario'])];
   $('#conteudo-lateral').innerHTML = `
-    <h2>${esc(c.nome)}</h2><div class="sub">#${esc(c.id)} · ${c.versoes.length} versão(ões): ${c.versoes.map((x) => `${esc(x.vigenciaInicio)} (${brl(x.valorBase)})`).join(', ')}</div>
+    ${novo ? '<h2>Novo contrato</h2><div class="sub">Preencha o cadastro, o valor base e as franquias. Depois de salvo, ele aparece na Apuração e no Fechamento.</div>'
+      : `<h2>${esc(c.nome)}</h2><div class="sub">#${esc(c.id)} · ${c.versoes.length} versão(ões): ${c.versoes.map((x) => `${esc(x.vigenciaInicio)} (${brl(x.valorBase)})`).join(', ')}</div>`}
     <h3>Cadastro</h3><div class="form-grid">
+      ${novo ? `<label>Número do contrato <input id="c-id" value="${esc(c.id)}" maxlength="20" required><small>sugerido: próximo número livre</small></label>` : ''}
       <label>Nome <input id="c-nome" value="${esc(c.nome)}" ${ro}></label>
       <label>CNPJ <input id="c-cnpj" value="${esc(c.cnpj || '')}" ${ro}></label>
       <label>Status ${sel('c-status', ['Ativo', 'Cancelado'], c.status)}</label>
@@ -215,10 +253,11 @@ function editarContrato(id) {
       <label>Início do contrato <input type="date" id="c-inicio" value="${esc(c.dataInicio || '')}" ${ro}></label>
       <label>Adicional de funcionário ${sel('c-tipofunc', ['lote', 'unitario'], c.tipoAdicionalFuncionario)}</label>
     </div>
-    <h3>Versão vigente (desde ${esc(v.vigenciaInicio)})</h3>
+    <h3>${novo ? 'Valores' : `Versão vigente (desde ${esc(v.vigenciaInicio)})`}</h3>
     <div class="form-grid">
       <label>Valor base (R$) <input type="number" step="0.01" id="v-base" value="${esc(v.valorBase ?? '')}" ${ro}></label>
-      <label>Nova versão a partir de <input type="month" id="v-nova" ${ro}><small>vazio = editar a versão atual</small></label>
+      ${novo ? `<label>Vigência a partir de <input type="month" id="v-vigencia" value="${esc(v.vigenciaInicio)}" required><small>vazio = mês do início do contrato</small></label>`
+        : `<label>Nova versão a partir de <input type="month" id="v-nova" ${ro}><small>vazio = editar a versão atual</small></label>`}
     </div>
     <h3>Franquias contratadas</h3><div class="form-grid">
       ${Object.entries(svc.METRICAS).map(([k, mt]) => `<label>${esc(mt.rotulo)}${mt.cobrada ? '' : ' (monitorada)'} <input type="number" data-fr="${esc(k)}" value="${esc(v.franquias?.[k] ?? '')}" ${ro}></label>`).join('')}
@@ -228,22 +267,184 @@ function editarContrato(id) {
     </div>
     <h3>Descontos (um por linha: pct|valor; valor; início AAAA-MM; fim AAAA-MM opcional; motivo)</h3>
     <textarea id="c-desc" class="baixo" ${ro}>${esc((c.descontos || []).map((d) => [d.tipo, d.valor, d.inicio, d.fim || '', d.motivo || ''].join('; ')).join('\n'))}</textarea>
-    ${ro ? '' : '<div class="acoes"><button id="salvar-contrato">Salvar contrato</button></div>'}`;
+    ${ro ? '' : `<div class="acoes"><button id="salvar-contrato">${novo ? 'Criar contrato' : 'Salvar contrato'}</button>${novo ? '' : '<span class="cresce"></span><button class="perigo" id="excluir-contrato">Excluir contrato</button>'}</div>`}`;
   $('#painel-lateral').classList.remove('oculta');
   if (ro) return;
+  if (!novo) $('#excluir-contrato').onclick = tentar(() => excluirEmpresa(c.id));
   $('#salvar-contrato').onclick = tentar(async () => {
     const franquias = {}, prec = {};
     document.querySelectorAll('[data-fr]').forEach((i) => { if (i.value !== '') franquias[i.dataset.fr] = Number(i.value); });
     document.querySelectorAll('[data-pr]').forEach((i) => { if (i.value !== '') prec[i.dataset.pr] = Number(i.value); });
-    const nova = { vigenciaInicio: $('#v-nova').value || v.vigenciaInicio, valorBase: Number($('#v-base').value) || 0, franquias, precos: prec, origem: `Editado em ${new Date().toISOString().slice(0, 10)}` };
-    if ($('#v-nova').value && $('#v-nova').value !== v.vigenciaInicio) c.versoes.push(nova); else c.versoes[c.versoes.length - 1] = nova;
+    const hoje = new Date().toISOString().slice(0, 10);
+    if (novo) {
+      c.id = $('#c-id').value.trim();
+      const vig = $('#v-vigencia').value || ($('#c-inicio').value || '').slice(0, 7) || comp();
+      c.versoes = [{ vigenciaInicio: vig, valorBase: Number($('#v-base').value) || 0, franquias, precos: prec, origem: `Cadastrado na tela em ${hoje}` }];
+    } else {
+      const nova = { vigenciaInicio: $('#v-nova').value || v.vigenciaInicio, valorBase: Number($('#v-base').value) || 0, franquias, precos: prec, origem: `Editado em ${hoje}` };
+      if ($('#v-nova').value && $('#v-nova').value !== v.vigenciaInicio) c.versoes.push(nova); else c.versoes[c.versoes.length - 1] = nova;
+    }
     Object.assign(c, { nome: $('#c-nome').value, cnpj: $('#c-cnpj').value, status: $('#c-status').value || 'Ativo', plano: $('#c-plano').value || null,
       processo: $('#c-processo').value || null, indice: $('#c-indice').value || null, dataInicio: $('#c-inicio').value || null, tipoAdicionalFuncionario: $('#c-tipofunc').value || 'lote' });
     c.descontos = $('#c-desc').value.split('\n').map((l) => l.split(';').map((s) => s.trim())).filter((p) => p[0])
       .map(([tipo, valor, inicio, fim, motivo]) => ({ tipo: tipo === 'pct' ? 'pct' : 'valor', valor: Number(valor), inicio, fim: fim || null, motivo }));
-    await svc.salvarContrato(c);
-    toast('Contrato salvo'); await carregarContratos(); editarContrato(c.id);
+    if (novo) {
+      const cnpj = c.cnpj.replace(/\D/g, '');
+      const mesmo = cnpj && svc.contratosEmCache().find((x) => x.cnpj && x.cnpj.replace(/^0+/, '') === cnpj.replace(/^0+/, ''));
+      if (mesmo && !confirm(`O CNPJ já está no contrato #${mesmo.id} (${mesmo.nome}). As medições desse CNPJ podem ir para os dois. Criar mesmo assim?`)) return;
+      await svc.criarContrato(c);
+      toast(`Contrato #${c.id} criado`);
+    } else {
+      await svc.salvarContrato(c);
+      toast('Contrato salvo');
+    }
+    await recarregarListas(); editarContrato(c.id);
   });
+}
+
+// ---------- Fechamento (horas por setor) ----------
+// O rascunho vive só na tela até "Salvar alterações"; cada edição recalcula a linha e os indicadores.
+const fech = { lista: [], atual: {}, original: {}, sel: new Set() };
+const fechAlterados = () => fech.lista.filter((e) => JSON.stringify(fech.atual[e.id]) !== fech.original[e.id]);
+const horasTxt = (v) => (v == null ? '' : String(Math.round(v * 100) / 100).replace('.', ','));
+
+async function carregarFechamento() {
+  // Rascunhos não salvos sobrevivem a um recarregamento (ex.: depois de editar o cadastro de uma empresa).
+  const pendentes = Object.fromEntries(fechAlterados().map((e) => [e.id, fech.atual[e.id]]));
+  fech.lista = (await svc.fechamentos()).filter((e) => e.status === 'Ativo' || Object.keys(e.setores).length);
+  fech.atual = {}; fech.original = {};
+  for (const e of fech.lista) { fech.original[e.id] = JSON.stringify(e.setores); fech.atual[e.id] = pendentes[e.id] || { ...e.setores }; }
+  fech.sel = new Set([...fech.sel].filter((id) => fech.atual[id]));
+  estado.config = await svc.config(); // preços negociados no editor de contrato aberto por esta aba
+  $('#lote-setores').innerHTML = Object.entries(SETORES).map(([k, r]) => `<label class="chk"><input type="checkbox" data-lote="${k}"> ${esc(r)}</label>`).join('');
+  renderFechamento();
+}
+
+function kpisFechamento() {
+  const g = FECH.resumoGeral(fech.lista.map((e) => ({ setores: fech.atual[e.id] })));
+  const kpi = (rotulo, valor, sub = '') => `<div class="kpi"><small>${rotulo}</small><b>${valor}</b>${sub ? `<small>${sub}</small>` : ''}</div>`;
+  $('#kpis-fechamento').innerHTML = [
+    kpi('Empresas com tempo', `${g.empresas} de ${fech.lista.length}`),
+    kpi('Média por empresa', horas(g.mediaPorEmpresa), 'soma dos setores'),
+    kpi('Média por setor', horas(g.mediaPorSetor), `${horas(g.totalHoras)} ÷ ${g.setoresInformados} setor(es)`),
+    ...Object.entries(SETORES).map(([k, r]) => kpi(`Média ${r}`, horas(g.porSetor[k].media), `${g.porSetor[k].empresas} empresa(s)`)),
+  ].join('');
+  const n = fechAlterados().length;
+  $('#fech-salvar').disabled = !n; $('#fech-descartar').disabled = !n;
+  $('#fech-salvar').textContent = n ? `Salvar alterações (${n})` : 'Salvar alterações';
+}
+
+function celulasResumo(id) {
+  const r = FECH.resumoEmpresa(fech.atual[id]);
+  return `<td class="n resumo-fech">${r.setores || '–'}</td><td class="n resumo-fech">${r.informados ? horas(r.totalHoras) : '–'}</td>
+    <td class="n resumo-fech"><b>${horas(r.mediaPorSetor)}</b>${r.setores && !r.completo ? '<br><small class="tag alerta">falta hora</small>' : ''}</td>`;
+}
+
+function renderFechamento() {
+  const q = $('#busca-fechamento').value.toLowerCase(), f = $('#filtro-fechamento').value;
+  const alterados = new Set(fechAlterados().map((e) => e.id));
+  const lista = fech.lista.filter((e) => {
+    if (q && !`${e.nome} ${e.cnpj || ''} ${e.id}`.toLowerCase().includes(q)) return false;
+    const r = FECH.resumoEmpresa(fech.atual[e.id]);
+    if (f === 'com') return r.informados > 0;
+    if (f === 'sem') return r.setores === 0;
+    if (f === 'incompleto') return r.setores > 0 && !r.completo;
+    if (f === 'alterado') return alterados.has(e.id);
+    return true;
+  });
+  const ro = leitura() ? 'disabled' : '';
+  const todos = lista.length && lista.every((e) => fech.sel.has(e.id));
+  $('#tabela-fechamento').innerHTML = `<thead><tr>${ro ? '' : `<th class="sel"><input type="checkbox" id="fech-todos" title="Selecionar as empresas listadas" ${todos ? 'checked' : ''}></th>`}
+    <th>Empresa</th>${Object.values(SETORES).map((r) => `<th>${esc(r)}</th>`).join('')}<th class="n">Setores</th><th class="n">Total</th><th class="n">Média / setor</th>${ro ? '' : '<th></th>'}</tr></thead><tbody>${
+    lista.map((e) => { const st = fech.atual[e.id]; return `<tr data-id="${esc(e.id)}" class="${alterados.has(e.id) ? 'alterado' : ''}">
+      ${ro ? '' : `<td class="sel"><input type="checkbox" data-sel ${fech.sel.has(e.id) ? 'checked' : ''}></td>`}
+      <td><b>${esc(e.nome)}</b><br><small class="sub">${cnpjFmt(e.cnpj)} · #${esc(e.id)} · ${esc(e.plano || 'sem plano')}${e.status !== 'Ativo' ? ' · cancelado' : ''}</small></td>
+      ${Object.entries(SETORES).map(([k, r]) => `<td><div class="setor"><input type="checkbox" data-setor="${k}" aria-label="${esc(r)}" ${k in st ? 'checked' : ''} ${ro}>
+        <input type="text" inputmode="decimal" data-horas="${k}" value="${esc(horasTxt(st[k]))}" placeholder="h" aria-label="Horas ${esc(r)}" ${k in st && !ro ? '' : 'disabled'}></div></td>`).join('')}
+      ${celulasResumo(e.id)}${botoesEmpresa(e.id)}</tr>`; }).join('') || `<tr><td colspan="${ro ? 8 : 10}" class="sub">Nenhuma empresa neste filtro.</td></tr>`
+  }</tbody>`;
+  atualizarLote();
+  kpisFechamento();
+}
+
+function atualizarLinhaFechamento(tr) {
+  const id = tr.dataset.id;
+  tr.querySelectorAll('td.resumo-fech').forEach((td) => td.remove());
+  const acoes = tr.querySelector('td.acoes-linha');
+  if (acoes) acoes.insertAdjacentHTML('beforebegin', celulasResumo(id)); else tr.insertAdjacentHTML('beforeend', celulasResumo(id));
+  tr.classList.toggle('alterado', JSON.stringify(fech.atual[id]) !== fech.original[id]);
+  kpisFechamento();
+}
+
+function atualizarLote() {
+  const n = fech.sel.size;
+  $('#lote-qtd').textContent = `${n} selecionada(s)`;
+  $('#lote-aplicar').disabled = !n;
+}
+
+function aoEditarFechamento(ev) {
+  const el = ev.target, tr = el.closest('tr[data-id]');
+  if (!tr) return;
+  const id = tr.dataset.id, st = fech.atual[id];
+  if (el.matches('[data-sel]')) { if (el.checked) fech.sel.add(id); else fech.sel.delete(id); return atualizarLote(); }
+  if (el.matches('[data-setor]')) {
+    const k = el.dataset.setor, campo = tr.querySelector(`[data-horas="${k}"]`);
+    if (el.checked) { const h = FECH.lerHoras(campo.value); st[k] = Number.isNaN(h) ? null : h; campo.disabled = false; campo.focus(); }
+    else { delete st[k]; campo.disabled = true; campo.classList.remove('invalido'); }
+  } else if (el.matches('[data-horas]')) {
+    const h = FECH.lerHoras(el.value);
+    el.classList.toggle('invalido', Number.isNaN(h));
+    st[el.dataset.horas] = Number.isNaN(h) ? null : h;
+  } else return;
+  atualizarLinhaFechamento(tr);
+}
+
+// Aplica os setores marcados na barra às empresas selecionadas; horas já digitadas nos setores mantidos ficam.
+function aplicarLote() {
+  const marcados = [...document.querySelectorAll('[data-lote]:checked')].map((i) => i.dataset.lote);
+  if (!marcados.length && !confirm('Nenhum setor marcado: isso tira todos os setores das empresas selecionadas. Continuar?')) return;
+  for (const id of fech.sel) {
+    const st = fech.atual[id], novo = {};
+    for (const k of marcados) novo[k] = k in st ? st[k] : null;
+    fech.atual[id] = novo;
+  }
+  toast(`Setores aplicados a ${fech.sel.size} empresa(s). Informe as horas e salve.`);
+  renderFechamento();
+}
+
+// Pré-marca os setores pelo plano. Nunca mexe em empresa que já tem setor; com empresas selecionadas,
+// age só nelas. Fica em rascunho para a pessoa revisar e salvar.
+function sugerirPorPlano() {
+  const alvo = fech.sel.size ? fech.lista.filter((e) => fech.sel.has(e.id)) : fech.lista;
+  let marcadas = 0, jaTinham = 0;
+  const semSugestao = [];
+  for (const e of alvo) {
+    if (Object.keys(fech.atual[e.id]).length) { jaTinham++; continue; }
+    const setores = FECH.sugerirSetores(e.plano);
+    if (!setores) { semSugestao.push(e); continue; }
+    fech.atual[e.id] = Object.fromEntries(setores.map((k) => [k, null]));
+    marcadas++;
+  }
+  const regras = 'Contabilidade → Contábil e Fiscal\nBPO Financeiro → BPO\nBPO Financeiro + Contabilidade → os 4 setores\nPejota → Contábil, Fiscal e BPO';
+  if (!marcadas) {
+    alert(`Nenhuma empresa recebeu sugestão.\n\n${jaTinham} já tinham setores (não são alteradas) e ${semSugestao.length} estão sem plano ou com plano sem setor de fechamento.\n\nRegras:\n${regras}`);
+    return;
+  }
+  $('#filtro-fechamento').value = 'alterado';
+  renderFechamento();
+  toast(`${marcadas} empresa(s) com setores sugeridos pelo plano. ${jaTinham ? `${jaTinham} já tinham setores e ficaram como estavam. ` : ''}${semSugestao.length ? `${semSugestao.length} sem plano ou sem sugestão. ` : ''}Revise, informe as horas e salve.`);
+}
+
+async function salvarFechamento() {
+  if (document.querySelector('#tabela-fechamento input.invalido')) throw new Error('Corrija as horas em vermelho (use 12, 12,5 ou 12:30; até 1000 h).');
+  const alterados = fechAlterados();
+  if (!alterados.length) return;
+  const b = $('#fech-salvar'); b.disabled = true;
+  try {
+    await svc.salvarFechamentos(alterados.map((e) => ({ id: e.id, nome: e.nome, setores: fech.atual[e.id] })));
+    for (const e of alterados) fech.original[e.id] = JSON.stringify(fech.atual[e.id]);
+    toast(`Tempo de fechamento salvo (${alterados.length} empresa(s))`);
+  } finally { renderFechamento(); }
 }
 
 // ---------- Importações ----------
@@ -301,11 +502,18 @@ async function carregarEquipe() {
 
 // ---------- Inicialização ----------
 function trocarAba(aba) {
+  if (estado.aba === 'fechamento' && fechAlterados().length
+      && !confirm('Há alterações de fechamento não salvas. Sair e descartar?')) {
+    document.querySelectorAll('#abas button').forEach((b) => b.classList.toggle('ativa', b.dataset.aba === estado.aba));
+    return;
+  }
+  if (estado.aba === 'fechamento' && aba !== 'fechamento') fech.lista = [];
+  document.documentElement.style.setProperty('--topo-h', `${$('.topo').offsetHeight}px`);
   estado.aba = aba;
   document.querySelectorAll('#abas button').forEach((b) => b.classList.toggle('ativa', b.dataset.aba === aba));
   document.querySelectorAll('.aba').forEach((s) => s.classList.toggle('oculta', s.id !== `aba-${aba}`));
   $('#painel-lateral').classList.add('oculta');
-  tentar(({ apuracao: carregarPainel, contratos: carregarContratos, importacoes: carregarImportacoes, indices: carregarIndices, equipe: carregarEquipe })[aba])();
+  tentar(({ apuracao: carregarPainel, contratos: carregarContratos, fechamento: carregarFechamento, importacoes: carregarImportacoes, indices: carregarIndices, equipe: carregarEquipe })[aba])();
 }
 
 (function init() {
@@ -321,6 +529,23 @@ function trocarAba(aba) {
   $('#competencia').onchange = () => trocarAba(estado.aba);
   $('#busca').oninput = renderApuracao; $('#filtro').onchange = renderApuracao;
   $('#busca-contratos').oninput = renderContratos;
+  $('#novo-contrato').onclick = () => editarContrato(null);
+  $('#tabela-contratos').addEventListener('click', aoClicarAcaoEmpresa);
+  $('#tabela-fechamento').addEventListener('click', aoClicarAcaoEmpresa);
+  $('#busca-fechamento').oninput = renderFechamento; $('#filtro-fechamento').onchange = renderFechamento;
+  $('#tabela-fechamento').addEventListener('change', aoEditarFechamento);
+  $('#tabela-fechamento').addEventListener('input', (e) => { if (e.target.matches('[data-horas]')) aoEditarFechamento(e); });
+  $('#tabela-fechamento').addEventListener('click', (e) => {
+    if (e.target.id !== 'fech-todos') return;
+    document.querySelectorAll('#tabela-fechamento tr[data-id]').forEach((tr) => { if (e.target.checked) fech.sel.add(tr.dataset.id); else fech.sel.delete(tr.dataset.id); });
+    document.querySelectorAll('#tabela-fechamento [data-sel]').forEach((c) => { c.checked = e.target.checked; });
+    atualizarLote();
+  });
+  $('#lote-aplicar').onclick = aplicarLote;
+  $('#lote-sugerir').onclick = sugerirPorPlano;
+  $('#fech-salvar').onclick = tentar(salvarFechamento);
+  $('#fech-descartar').onclick = () => { if (confirm('Descartar as alterações não salvas?')) { for (const e of fech.lista) fech.atual[e.id] = JSON.parse(fech.original[e.id]); renderFechamento(); } };
+  window.addEventListener('beforeunload', (e) => { if (estado.aba === 'fechamento' && fechAlterados().length) e.preventDefault(); });
   $('#fechar-lateral').onclick = () => $('#painel-lateral').classList.add('oculta');
   $('#idx-nome').onchange = renderIndices;
   $('#sair').onclick = () => { api.sair(); mostrarLogin(); };

@@ -89,3 +89,4 @@ button.perigo { background: var(--card); color: var(--erro); border-color: var(-
 button.perigo:hover { background: var(--erro-2); }
 button.mini { padding: 3px 8px; font-size: 12px; }
 td.acoes-linha { text-align: right; } td.acoes-linha button + button { margin-left: 6px; }
+.franquia-linha { font-size: 12px; color: var(--mut); white-space: normal; max-width: 340px; margin-top: 2px; }

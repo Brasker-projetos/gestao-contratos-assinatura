@@ -334,6 +334,14 @@ function kpisFechamento() {
   $('#fech-salvar').textContent = n ? `Salvar alterações (${n})` : 'Salvar alterações';
 }
 
+// Franquia contratada em uma linha (mostra quais serviços a empresa tem enquanto se marcam os setores).
+const ROTULO_CURTO = { funcionarios: 'funcionários', recebimentos: 'NF serviços', nf_saidas: 'NF saídas', nf_entradas: 'NF entradas',
+  lancamentos: 'lançamentos', pagamentos: 'pagamentos', contas_bancarias: 'contas bancárias', gateways: 'gateways', cartoes: 'cartões', transacoes: 'transações' };
+function franquiaResumo(fr) {
+  const itens = Object.keys(ROTULO_CURTO).filter((k) => fr[k] != null).map((k) => `${Number(fr[k]).toLocaleString('pt-BR')} ${ROTULO_CURTO[k]}`);
+  return itens.length ? `Franquia: ${itens.join(' · ')}` : '<span class="tag alerta">sem franquia cadastrada</span>';
+}
+
 function celulasResumo(id) {
   const r = FECH.resumoEmpresa(fech.atual[id]);
   return `<td class="n resumo-fech">${r.setores || '–'}</td><td class="n resumo-fech">${r.informados ? horas(r.totalHoras) : '–'}</td>
@@ -358,7 +366,8 @@ function renderFechamento() {
     <th>Empresa</th>${Object.values(SETORES).map((r) => `<th>${esc(r)}</th>`).join('')}<th class="n">Setores</th><th class="n">Total</th><th class="n">Média / setor</th>${ro ? '' : '<th></th>'}</tr></thead><tbody>${
     lista.map((e) => { const st = fech.atual[e.id]; return `<tr data-id="${esc(e.id)}" class="${alterados.has(e.id) ? 'alterado' : ''}">
       ${ro ? '' : `<td class="sel"><input type="checkbox" data-sel ${fech.sel.has(e.id) ? 'checked' : ''}></td>`}
-      <td><b>${esc(e.nome)}</b><br><small class="sub">${cnpjFmt(e.cnpj)} · #${esc(e.id)} · ${esc(e.plano || 'sem plano')}${e.status !== 'Ativo' ? ' · cancelado' : ''}</small></td>
+      <td><b>${esc(e.nome)}</b><br><small class="sub">${cnpjFmt(e.cnpj)} · #${esc(e.id)} · ${esc(e.plano || 'sem plano')}${e.status !== 'Ativo' ? ' · cancelado' : ''}</small>
+        <div class="franquia-linha">${franquiaResumo(e.franquias)}</div></td>
       ${Object.entries(SETORES).map(([k, r]) => `<td><div class="setor"><input type="checkbox" data-setor="${k}" aria-label="${esc(r)}" ${k in st ? 'checked' : ''} ${ro}>
         <input type="text" inputmode="decimal" data-horas="${k}" value="${esc(horasTxt(st[k]))}" placeholder="h" aria-label="Horas ${esc(r)}" ${k in st && !ro ? '' : 'disabled'}></div></td>`).join('')}
       ${celulasResumo(e.id)}${botoesEmpresa(e.id)}</tr>`; }).join('') || `<tr><td colspan="${ro ? 8 : 10}" class="sub">Nenhuma empresa neste filtro.</td></tr>`
@@ -410,29 +419,6 @@ function aplicarLote() {
   }
   toast(`Setores aplicados a ${fech.sel.size} empresa(s). Informe as horas e salve.`);
   renderFechamento();
-}
-
-// Pré-marca os setores pelo plano. Nunca mexe em empresa que já tem setor; com empresas selecionadas,
-// age só nelas. Fica em rascunho para a pessoa revisar e salvar.
-function sugerirPorPlano() {
-  const alvo = fech.sel.size ? fech.lista.filter((e) => fech.sel.has(e.id)) : fech.lista;
-  let marcadas = 0, jaTinham = 0;
-  const semSugestao = [];
-  for (const e of alvo) {
-    if (Object.keys(fech.atual[e.id]).length) { jaTinham++; continue; }
-    const setores = FECH.sugerirSetores(e.plano);
-    if (!setores) { semSugestao.push(e); continue; }
-    fech.atual[e.id] = Object.fromEntries(setores.map((k) => [k, null]));
-    marcadas++;
-  }
-  const regras = 'Contabilidade → Contábil e Fiscal\nBPO Financeiro → BPO\nBPO Financeiro + Contabilidade → os 4 setores\nPejota → Contábil, Fiscal e BPO';
-  if (!marcadas) {
-    alert(`Nenhuma empresa recebeu sugestão.\n\n${jaTinham} já tinham setores (não são alteradas) e ${semSugestao.length} estão sem plano ou com plano sem setor de fechamento.\n\nRegras:\n${regras}`);
-    return;
-  }
-  $('#filtro-fechamento').value = 'alterado';
-  renderFechamento();
-  toast(`${marcadas} empresa(s) com setores sugeridos pelo plano. ${jaTinham ? `${jaTinham} já tinham setores e ficaram como estavam. ` : ''}${semSugestao.length ? `${semSugestao.length} sem plano ou sem sugestão. ` : ''}Revise, informe as horas e salve.`);
 }
 
 async function salvarFechamento() {
@@ -542,7 +528,6 @@ function trocarAba(aba) {
     atualizarLote();
   });
   $('#lote-aplicar').onclick = aplicarLote;
-  $('#lote-sugerir').onclick = sugerirPorPlano;
   $('#fech-salvar').onclick = tentar(salvarFechamento);
   $('#fech-descartar').onclick = () => { if (confirm('Descartar as alterações não salvas?')) { for (const e of fech.lista) fech.atual[e.id] = JSON.parse(fech.original[e.id]); renderFechamento(); } };
   window.addEventListener('beforeunload', (e) => { if (estado.aba === 'fechamento' && fechAlterados().length) e.preventDefault(); });

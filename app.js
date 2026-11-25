@@ -126,7 +126,8 @@ async function abrirDetalhe(id) {
   const { contrato: c, apuracao: a, reajuste, defasagem, historico } = d;
   const r = a.resultado;
   const ro = leitura();
-  const linhas = r.linhas.filter((l) => l.status !== 'nao_aplicavel' && (l.contratado != null || l.medido != null));
+  const linhas = r.linhas.filter((l) => l.status !== 'nao_aplicavel' && !svc.METRICAS[l.metrica].oculta
+    && ((l.contratado != null && !l.foraDoContrato) || l.medido != null));
   $('#conteudo-lateral').innerHTML = `
     <h2>${esc(c.nome)}</h2>
     <div class="sub">${cnpjFmt(c.cnpj)} · ${esc(c.plano || '')} · ${esc(c.processo || 'processo não informado')} · índice ${esc(c.indice || '–')}</div>
@@ -147,7 +148,7 @@ async function abrirDetalhe(id) {
     <div class="tabela-wrap"><table><thead><tr><th>Métrica</th><th class="n">Contratado</th><th class="n">Medido</th><th class="n">Lote</th><th class="n">Lotes c/m</th><th class="n">Exced.</th><th class="n">Preço</th><th class="n">Valor</th><th>Situação</th><th>Evidência</th></tr></thead><tbody>
     ${linhas.map((l) => { const [cls, txt] = STATUS_LINHA[l.status] || ['', l.status]; return `<tr>
       <td>${esc(l.rotulo)}${l.premissa ? ' <span class="tag alerta" title="' + esc(l.premissa) + '">premissa</span>' : ''}</td>
-      <td class="n">${esc(l.contratado ?? '–')}</td><td class="n">${esc(l.medido ?? '–')}</td><td class="n">${esc(l.lote ?? '–')}</td>
+      <td class="n">${esc(l.contratado ?? '–')}${l.foraDoContrato ? '<br><small class="tag alerta" title="Item que não está no contrato: conta como contratado zero">fora do contrato</small>' : ''}</td><td class="n">${esc(l.medido ?? '–')}</td><td class="n">${esc(l.lote ?? '–')}</td>
       <td class="n">${esc(l.lotesContratados ?? '–')} / ${esc(l.lotesMedidos ?? '–')}</td><td class="n">${esc(l.excedente || '–')}</td>
       <td class="n">${l.precoUnit != null ? brl(l.precoUnit) + (l.origemPreco === 'contrato' ? '*' : '') : '–'}</td>
       <td class="n">${l.valor ? `<b>${brl(l.valor)}</b>` : '–'}</td><td><span class="tag ${cls}">${esc(txt)}</span></td>
@@ -158,7 +159,7 @@ async function abrirDetalhe(id) {
     <div class="sub">${historico.map((h) => `${esc(h.comp)}: ${brl(h.total)}${h.adicionais ? ` (+${brl(h.adicionais)})` : ''}`).join(' · ')}</div>
     <h3>Pré-fatura</h3>
     <div class="linha-form">
-      <label>Valor final negociado <input type="number" step="0.01" id="valor-final" value="${esc(a.valorFinal ?? '')}" placeholder="${esc(r.total)}" ${ro || a.status !== 'rascunho' ? 'disabled' : ''}></label>
+      <label>Valor final negociado <input type="number" step="0.01" min="${esc(r.valorBase)}" id="valor-final" value="${esc(a.valorFinal ?? '')}" placeholder="${esc(r.total)}" ${ro || a.status !== 'rascunho' ? 'disabled' : ''}><small>mínimo: ${brl(r.valorBase)} (valor contratado)</small></label>
       <label class="cresce">Observação / motivo <input id="obs" value="${esc(a.observacao || '')}" ${ro || a.status !== 'rascunho' ? 'disabled' : ''}></label>
     </div>
     <div class="acoes">
@@ -260,7 +261,7 @@ function editarContrato(id) {
         : `<label>Nova versão a partir de <input type="month" id="v-nova" ${ro}><small>vazio = editar a versão atual</small></label>`}
     </div>
     <h3>Franquias contratadas</h3><div class="form-grid">
-      ${Object.entries(svc.METRICAS).map(([k, mt]) => `<label>${esc(mt.rotulo)}${mt.cobrada ? '' : ' (monitorada)'} <input type="number" data-fr="${esc(k)}" value="${esc(v.franquias?.[k] ?? '')}" ${ro}></label>`).join('')}
+      ${Object.entries(svc.METRICAS).filter(([, mt]) => !mt.oculta).map(([k, mt]) => `<label>${esc(mt.rotulo)}${mt.cobrada ? '' : ' (monitorada)'} <input type="number" data-fr="${esc(k)}" value="${esc(v.franquias?.[k] ?? '')}" ${ro}></label>`).join('')}
     </div>
     <h3>Preços negociados (vazio = tabela padrão)</h3><div class="form-grid">
       ${chavesPreco.map((k) => `<label>${esc(k.replace(/_/g, ' '))} <input type="number" step="0.01" data-pr="${esc(k)}" value="${esc(v.precos?.[k] ?? '')}" ${ro}></label>`).join('')}
@@ -302,29 +303,81 @@ function editarContrato(id) {
   });
 }
 
-// ---------- Fechamento (horas por setor) ----------
+// ---------- Fechamento: tempo gasto por cliente (empresa × setor × mês) ----------
 // O rascunho vive só na tela até "Salvar alterações"; cada edição recalcula a linha e os indicadores.
-const fech = { lista: [], atual: {}, original: {}, sel: new Set() };
+const fech = { lista: [], atual: {}, original: {}, sel: new Set(), comp: null };
+const mesTxt = (c) => (c ? `${c.slice(5, 7)}/${c.slice(0, 4)}` : '');
+const MESES_ABREV = ['jan', 'fev', 'mar', 'abr', 'mai', 'jun', 'jul', 'ago', 'set', 'out', 'nov', 'dez'];
+const mesCurto = (c) => `${MESES_ABREV[Number(c.slice(5, 7)) - 1]}/${c.slice(2, 4)}`;
+const mesesAte = (comp, n) => { const out = []; for (let i = n - 1; i >= 0; i--) out.push(globalThis.BraskerEngine.addMeses(comp, -i)); return out; };
 const fechAlterados = () => fech.lista.filter((e) => JSON.stringify(fech.atual[e.id]) !== fech.original[e.id]);
 const horasTxt = (v) => (v == null ? '' : String(Math.round(v * 100) / 100).replace('.', ','));
 
 async function carregarFechamento() {
   // Rascunhos não salvos sobrevivem a um recarregamento (ex.: depois de editar o cadastro de uma empresa).
-  const pendentes = Object.fromEntries(fechAlterados().map((e) => [e.id, fech.atual[e.id]]));
-  fech.lista = (await svc.fechamentos()).filter((e) => e.status === 'Ativo' || Object.keys(e.setores).length);
+  const comp = $('#fech-comp').value;
+  const pendentes = fech.comp === comp ? Object.fromEntries(fechAlterados().map((e) => [e.id, fech.atual[e.id]])) : {};
+  fech.comp = comp;
+  fech.lista = (await svc.fechamentos(comp)).filter((e) => e.status === 'Ativo' || Object.keys(e.historico).length);
   fech.atual = {}; fech.original = {};
   for (const e of fech.lista) { fech.original[e.id] = JSON.stringify(e.setores); fech.atual[e.id] = pendentes[e.id] || { ...e.setores }; }
   fech.sel = new Set([...fech.sel].filter((id) => fech.atual[id]));
   estado.config = await svc.config(); // preços negociados no editor de contrato aberto por esta aba
   $('#lote-setores').innerHTML = Object.entries(SETORES).map(([k, r]) => `<label class="chk"><input type="checkbox" data-lote="${k}"> ${esc(r)}</label>`).join('');
+  $('#fech-copiar').textContent = `Copiar horas de ${mesTxt(globalThis.BraskerEngine.addMeses(comp, -1))}`;
   renderFechamento();
 }
 
+// Troca de mês ou de visão. Alterações não salvas do mês pedem confirmação.
+function trocarVisaoFechamento() {
+  const ano = $('#fech-visao').value === 'ano';
+  $('#wrap-fech-mes').classList.toggle('oculta', ano);
+  $('#wrap-fech-ano').classList.toggle('oculta', !ano);
+  $('#lote-fechamento').classList.toggle('oculta', ano);
+  $('#filtro-fechamento').classList.toggle('oculta', ano);
+  renderFechamento();
+}
+
+function kpisAno() {
+  const meses = mesesAte(fech.comp, 12);
+  const res = fech.lista.map((e) => FECH.resumoPeriodo(Object.fromEntries(meses.filter((m) => e.historico[m]).map((m) => [m, e.historico[m]]))));
+  const com = res.filter((r) => r.meses);
+  const media = (xs) => (xs.length ? Math.round((xs.reduce((s, x) => s + x, 0) / xs.length) * 10) / 10 : null);
+  const kpi = (rotulo, valor, sub = '') => `<div class="kpi"><small>${rotulo}</small><b>${valor}</b>${sub ? `<small>${sub}</small>` : ''}</div>`;
+  $('#kpis-fechamento').innerHTML = [
+    kpi('Empresas com tempo', `${com.length} de ${fech.lista.length}`, `${mesTxt(meses[0])} a ${mesTxt(fech.comp)}`),
+    kpi('Média mensal por empresa', horas(media(com.map((r) => r.mediaMensal))), 'soma dos setores'),
+    ...Object.entries(SETORES).map(([k, r]) => { const xs = res.filter((x) => x.porSetor[k].meses).map((x) => x.porSetor[k].mediaMensal);
+      return kpi(`Média mensal ${r}`, horas(media(xs)), `${xs.length} empresa(s)`); }),
+  ].join('');
+}
+
+// Visão dos últimos 12 meses: total de horas de cada mês por empresa e a média mensal de cada setor.
+function renderAno() {
+  const q = $('#busca-fechamento').value.toLowerCase();
+  const meses = mesesAte(fech.comp, 12);
+  const lista = fech.lista.filter((e) => !q || `${e.nome} ${e.cnpj || ''} ${e.id}`.toLowerCase().includes(q));
+  $('#tabela-fech-ano').innerHTML = `<thead><tr><th>Empresa</th>${meses.map((m) => `<th class="n">${mesCurto(m)}</th>`).join('')}
+    <th class="n">Média mensal</th>${Object.values(SETORES).map((r) => `<th class="n">${esc(r)}<br><small>média/mês</small></th>`).join('')}</tr></thead><tbody>${
+    lista.map((e) => {
+      const hist = Object.fromEntries(meses.filter((m) => e.historico[m]).map((m) => [m, e.historico[m]]));
+      const r = FECH.resumoPeriodo(hist);
+      return `<tr><td><b>${esc(e.nome)}</b><br><small class="sub">#${esc(e.id)} · ${esc(e.plano || 'sem plano')}</small></td>
+        ${meses.map((m) => { const st = hist[m]; const t = st ? Object.entries(SETORES).filter(([k]) => typeof st[k] === 'number').map(([k, rr]) => `${rr}: ${horasTxt(st[k])} h`).join('\n') : '';
+          return `<td class="n" title="${esc(t)}">${r.porMes[m] != null ? horasTxt(r.porMes[m]) : '<span class="sub">–</span>'}</td>`; }).join('')}
+        <td class="n"><b>${horas(r.mediaMensal)}</b>${r.meses ? `<br><small class="sub">${r.meses} mês(es)</small>` : ''}</td>
+        ${Object.keys(SETORES).map((k) => `<td class="n">${horas(r.porSetor[k].mediaMensal)}</td>`).join('')}</tr>`;
+    }).join('') || '<tr><td colspan="18" class="sub">Nenhuma empresa.</td></tr>'
+  }</tbody>`;
+  kpisAno();
+}
+
 function kpisFechamento() {
+  if ($('#fech-visao').value === 'ano') return;
   const g = FECH.resumoGeral(fech.lista.map((e) => ({ setores: fech.atual[e.id] })));
   const kpi = (rotulo, valor, sub = '') => `<div class="kpi"><small>${rotulo}</small><b>${valor}</b>${sub ? `<small>${sub}</small>` : ''}</div>`;
   $('#kpis-fechamento').innerHTML = [
-    kpi('Empresas com tempo', `${g.empresas} de ${fech.lista.length}`),
+    kpi('Empresas com tempo', `${g.empresas} de ${fech.lista.length}`, `em ${mesTxt(fech.comp)}`),
     kpi('Média por empresa', horas(g.mediaPorEmpresa), 'soma dos setores'),
     kpi('Média por setor', horas(g.mediaPorSetor), `${horas(g.totalHoras)} ÷ ${g.setoresInformados} setor(es)`),
     ...Object.entries(SETORES).map(([k, r]) => kpi(`Média ${r}`, horas(g.porSetor[k].media), `${g.porSetor[k].empresas} empresa(s)`)),
@@ -336,7 +389,7 @@ function kpisFechamento() {
 
 // Franquia contratada em uma linha (mostra quais serviços a empresa tem enquanto se marcam os setores).
 const ROTULO_CURTO = { funcionarios: 'funcionários', recebimentos: 'NF serviços', nf_saidas: 'NF saídas', nf_entradas: 'NF entradas',
-  lancamentos: 'lançamentos', pagamentos: 'pagamentos', contas_bancarias: 'contas bancárias', gateways: 'gateways', cartoes: 'cartões', transacoes: 'transações' };
+  lancamentos: 'lançamentos', pagamentos: 'pagamentos', contas_bancarias: 'contas bancárias', gateways: 'gateways', cartoes: 'cartões' };
 function franquiaResumo(fr) {
   const itens = Object.keys(ROTULO_CURTO).filter((k) => fr[k] != null).map((k) => `${Number(fr[k]).toLocaleString('pt-BR')} ${ROTULO_CURTO[k]}`);
   return itens.length ? `Franquia: ${itens.join(' · ')}` : '<span class="tag alerta">sem franquia cadastrada</span>';
@@ -349,13 +402,14 @@ function celulasResumo(id) {
 }
 
 function renderFechamento() {
+  if ($('#fech-visao').value === 'ano') return renderAno();
   const q = $('#busca-fechamento').value.toLowerCase(), f = $('#filtro-fechamento').value;
   const alterados = new Set(fechAlterados().map((e) => e.id));
   const lista = fech.lista.filter((e) => {
     if (q && !`${e.nome} ${e.cnpj || ''} ${e.id}`.toLowerCase().includes(q)) return false;
     const r = FECH.resumoEmpresa(fech.atual[e.id]);
     if (f === 'com') return r.informados > 0;
-    if (f === 'sem') return r.setores === 0;
+    if (f === 'sem') return r.informados === 0;
     if (f === 'incompleto') return r.setores > 0 && !r.completo;
     if (f === 'alterado') return alterados.has(e.id);
     return true;
@@ -367,7 +421,7 @@ function renderFechamento() {
     lista.map((e) => { const st = fech.atual[e.id]; return `<tr data-id="${esc(e.id)}" class="${alterados.has(e.id) ? 'alterado' : ''}">
       ${ro ? '' : `<td class="sel"><input type="checkbox" data-sel ${fech.sel.has(e.id) ? 'checked' : ''}></td>`}
       <td><b>${esc(e.nome)}</b><br><small class="sub">${cnpjFmt(e.cnpj)} · #${esc(e.id)} · ${esc(e.plano || 'sem plano')}${e.status !== 'Ativo' ? ' · cancelado' : ''}</small>
-        <div class="franquia-linha">${franquiaResumo(e.franquias)}</div></td>
+        <div class="franquia-linha">${franquiaResumo(e.franquias)}</div>${e.herdadoDe && JSON.stringify(st) === fech.original[e.id] ? `<small class="tag" title="Ainda sem tempo neste mês: setores trazidos do último mês lançado">setores de ${mesTxt(e.herdadoDe)}</small>` : ''}</td>
       ${Object.entries(SETORES).map(([k, r]) => `<td><div class="setor"><input type="checkbox" data-setor="${k}" aria-label="${esc(r)}" ${k in st ? 'checked' : ''} ${ro}>
         <input type="text" inputmode="decimal" data-horas="${k}" value="${esc(horasTxt(st[k]))}" placeholder="h" aria-label="Horas ${esc(r)}" ${k in st && !ro ? '' : 'disabled'}></div></td>`).join('')}
       ${celulasResumo(e.id)}${botoesEmpresa(e.id)}</tr>`; }).join('') || `<tr><td colspan="${ro ? 8 : 10}" class="sub">Nenhuma empresa neste filtro.</td></tr>`
@@ -421,16 +475,27 @@ function aplicarLote() {
   renderFechamento();
 }
 
+// Copia setores e horas do mês anterior para as empresas ainda sem tempo neste mês (ou só as selecionadas).
+function copiarMesAnterior() {
+  const alvo = fech.lista.filter((e) => (!fech.sel.size || fech.sel.has(e.id)) && e.anterior && !e.atualizadoEm
+    && JSON.stringify(fech.atual[e.id]) === fech.original[e.id]);
+  if (!alvo.length) return toast('Nenhuma empresa para copiar: todas já têm tempo neste mês, foram alteradas ou não têm tempo no mês anterior.');
+  for (const e of alvo) fech.atual[e.id] = { ...e.anterior };
+  $('#filtro-fechamento').value = 'alterado';
+  renderFechamento();
+  toast(`Horas de ${mesTxt(globalThis.BraskerEngine.addMeses(fech.comp, -1))} copiadas para ${alvo.length} empresa(s). Ajuste o que mudou e salve.`);
+}
+
 async function salvarFechamento() {
   if (document.querySelector('#tabela-fechamento input.invalido')) throw new Error('Corrija as horas em vermelho (use 12, 12,5 ou 12:30; até 1000 h).');
   const alterados = fechAlterados();
   if (!alterados.length) return;
   const b = $('#fech-salvar'); b.disabled = true;
   try {
-    await svc.salvarFechamentos(alterados.map((e) => ({ id: e.id, nome: e.nome, setores: fech.atual[e.id] })));
-    for (const e of alterados) fech.original[e.id] = JSON.stringify(fech.atual[e.id]);
-    toast(`Tempo de fechamento salvo (${alterados.length} empresa(s))`);
-  } finally { renderFechamento(); }
+    await svc.salvarFechamentos(fech.comp, alterados.map((e) => ({ id: e.id, nome: e.nome, setores: fech.atual[e.id] })));
+    toast(`Tempo gasto de ${mesTxt(fech.comp)} salvo (${alterados.length} empresa(s))`);
+    if ($('#filtro-fechamento').value === 'alterado') $('#filtro-fechamento').value = ''; // senão a lista fica vazia
+  } finally { b.disabled = false; await carregarFechamento(); }
 }
 
 // ---------- Importações ----------
@@ -528,6 +593,17 @@ function trocarAba(aba) {
     atualizarLote();
   });
   $('#lote-aplicar').onclick = aplicarLote;
+  $('#fech-copiar').onclick = copiarMesAnterior;
+  { const h = new Date(); const ant = new Date(h.getFullYear(), h.getMonth() - 1, 1);
+    $('#fech-comp').value = `${ant.getFullYear()}-${String(ant.getMonth() + 1).padStart(2, '0')}`; } // fechamento do mês anterior
+  $('#fech-comp').onchange = tentar(async () => {
+    if (fechAlterados().length && !confirm(`Há alterações de ${mesTxt(fech.comp)} não salvas. Trocar de mês e descartar?`)) { $('#fech-comp').value = fech.comp; return; }
+    fech.lista = []; await carregarFechamento();
+  });
+  $('#fech-visao').onchange = () => {
+    if ($('#fech-visao').value === 'ano' && fechAlterados().length && !confirm(`Há alterações de ${mesTxt(fech.comp)} não salvas. Elas continuam aqui, mas não entram na visão de 12 meses até salvar. Continuar?`)) { $('#fech-visao').value = 'mes'; return; }
+    trocarVisaoFechamento();
+  };
   $('#fech-salvar').onclick = tentar(salvarFechamento);
   $('#fech-descartar').onclick = () => { if (confirm('Descartar as alterações não salvas?')) { for (const e of fech.lista) fech.atual[e.id] = JSON.parse(fech.original[e.id]); renderFechamento(); } };
   window.addEventListener('beforeunload', (e) => { if (estado.aba === 'fechamento' && fechAlterados().length) e.preventDefault(); });
